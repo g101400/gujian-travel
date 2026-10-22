@@ -116,19 +116,31 @@ def api(method, url, token, body=None, retries=4):
 
 
 def list_files():
+    """枚举应推送的文件。
+
+    以 git 的忽略语义为权威来源：git ls-files --cached --others --exclude-standard
+    返回「已追踪 + 未追踪但非忽略」的全部文件，与 .gitignore 完全一致
+    （含 secrets/、*.local.js、*.keystore、*.apk、*.deb、offline_tiles/、ai_seed.js 等）。
+    再叠加 is_excluded() 作二次防御，确保即便 .gitignore 漏配，敏感/产物规则仍兜底拦截。
+    """
+    import subprocess
+    git_files = []
+    try:
+        # 用 -z 输出 NUL 分隔的原始路径，避免 quotePath 转义（中文/特殊字符）被误当字面量
+        out = subprocess.check_output(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=ROOT, stderr=subprocess.DEVNULL,
+        )
+        git_files = [p for p in out.split(b"\x00") if p]
+        git_files = [p.decode("utf-8", "replace") for p in git_files]
+    except Exception as e:
+        print(f"[WARN] git ls-files 失败，回退到 os.walk 枚举: {e}", file=sys.stderr)
     out = []
-    for dirpath, dirnames, filenames in os.walk(ROOT):
-        # 过滤排除目录
-        dirnames[:] = [
-            d for d in dirnames
-            if not is_excluded(os.path.relpath(os.path.join(dirpath, d), ROOT).replace("\\", "/"))
-        ]
-        for fn in filenames:
-            full = os.path.join(dirpath, fn)
-            rel = os.path.relpath(full, ROOT).replace("\\", "/")
-            if is_excluded(rel):
-                continue
-            out.append(rel)
+    for rel in git_files:
+        rel = rel.replace("\\", "/")
+        if is_excluded(rel):
+            continue
+        out.append(rel)
     out.sort()
     return out
 
